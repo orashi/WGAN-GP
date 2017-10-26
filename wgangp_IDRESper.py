@@ -469,6 +469,8 @@ for epoch in range(opt.niter):
             mse = netM(inputv).data / scaler + perceptualRes_cpu
 
             if flag:  # fix samples
+                fixed_zasshu.resize_as_(fake_cpu).copy_(fake_cpu)
+                fixed_PER.resize_as_(real_cpu).copy_(mse)
                 writer.add_image('real_cpu imgs', vutils.make_grid(real_cpu.mul(0.5).add(0.5), nrow=16))
                 writer.add_image('LRMSE imgs', vutils.make_grid(fixed_PER.mul(0.5).add(0.5).clamp(0, 1), nrow=16))
                 writer.add_image('HRRes imgs', vutils.make_grid((real_cpu - fixed_PER).mul(0.5 * scaler).add(0.5).clamp(0, 1), nrow=16))
@@ -476,8 +478,7 @@ for epoch in range(opt.niter):
                                   '%s/real_samples.png' % opt.outf)
                 vutils.save_image(fixed_zasshu.mul(0.5).add(0.5),
                                   '%s/ori_samples.png' % opt.outf)
-                fixed_zasshu.resize_as_(fake_cpu).copy_(fake_cpu)
-                fixed_PER.resize_as_(real_cpu).copy_(mse)
+
 
                 flag -= 1
 
