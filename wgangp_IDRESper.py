@@ -17,7 +17,6 @@ from torch.autograd import Variable
 from PIL import Image
 import math
 import numpy as np
-from visdom import Visdom
 
 # import matplotlib.pyplot as plt
 
@@ -107,11 +106,6 @@ dataset = dset.ImageFolder(root=opt.dataroot,
                            target_transform2=HRTrans,
                            )
 
-# def convert(input, i, LBA):
-#     return LBA(Image.fromarray(
-#         input[i].mul(0.5).add(0.5).mul(255).byte().transpose(0, 2).transpose(0, 1).numpy()))  # bicubic
-
-
 assert dataset
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batchSize,
                                          shuffle=True, num_workers=int(opt.workers))
@@ -133,6 +127,25 @@ class BasicBlock(nn.Module):
 
         out = self.conv1(F.relu(x, True))
         out = self.conv2(F.relu(out, True)) * 0.3 + residual
+
+        return out
+
+
+class BasicBlock2(nn.Module):
+    expansion = 1
+
+    def __init__(self):
+        super(BasicBlock2, self).__init__()
+        self.conv1 = nn.Conv2d(ngf, ngf, 3, 1, 1, bias=False)
+        self.bn1 = nn.BatchNorm2d(ngf)
+        self.conv2 = nn.Conv2d(ngf, ngf, 3, 1, 1, bias=False)
+        self.bn2 = nn.BatchNorm2d(ngf)
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(F.relu(self.bn1(x), True))
+        out = self.conv2(F.relu(self.bn2(out), True)) * 0.3 + residual
 
         return out
 
@@ -271,7 +284,7 @@ class _netM(nn.Module):
     def _make_layer(self, blocks):
         layers = []
         for i in range(0, blocks):
-            layers.append(BasicBlock())
+            layers.append(BasicBlock2())
 
         return nn.Sequential(*layers)
 
@@ -284,7 +297,7 @@ class _netM(nn.Module):
         out = F.relu(self.pixel_shuffle1(self.conv7(out)), True)
         out = F.relu(self.pixel_shuffle2(self.conv8(out)), True)
 
-        out = self.conv9(out)
+        out = F.tanh(self.conv9(out) / 5.)
 
         return out
 
