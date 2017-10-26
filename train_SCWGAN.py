@@ -11,6 +11,7 @@ import torch.utils.data
 import styleData as dset
 import torchvision.transforms as transforms
 import torchvision.utils as vutils
+from tensorboardX import SummaryWriter
 import torchvision.models as M
 from torch.autograd import Variable
 from PIL import Image
@@ -45,21 +46,23 @@ parser.add_argument('--manualSeed', type=int, default=2345, help='random seed to
 parser.add_argument('--baseGeni', type=int, default=100, help='start base of pure mse loss')
 parser.add_argument('--geni', type=int, default=0, help='continue gen image num')
 parser.add_argument('--epoi', type=int, default=0, help='continue epoch num')
-parser.add_argument('--env', type=str, default='main', help='visdom env')
+parser.add_argument('--env', type=str, default=None, help='tensorboard env')
+parser.add_argument('--optim', action='store_true', help='load optimizer\'s checkpoint')
+
 
 opt = parser.parse_args()
 print(opt)
 
-viz = Visdom(env=opt.env)
+writer = SummaryWriter(log_dir=opt.env, comment='this is great')
 
-imageW = viz.images(
-    np.random.rand(3, 512, 256),
-    opts=dict(title='fakeHR', caption='fakeHR')
-)
-imageW2 = viz.images(
-    np.random.rand(3, 512, 256),
-    opts=dict(title='fakeHRRes', caption='fakeHRRes')
-)
+# imageW = viz.images(
+#     np.random.rand(3, 512, 256),
+#     opts=dict(title='fakeHR', caption='fakeHR')
+# )
+# imageW2 = viz.images(
+#     np.random.rand(3, 512, 256),
+#     opts=dict(title='fakeHRRes', caption='fakeHRRes')
+# )
 
 cuts = opt.cut  # save division
 ngf = opt.ngf
@@ -110,40 +113,10 @@ assert datasetB
 dataloaderB = torch.utils.data.DataLoader(datasetB, batch_size=opt.batchSize,
                                           shuffle=True, num_workers=int(opt.workers))
 
-
-class LayerNormalization(nn.Module):  # PR this!!
-    def __init__(self, channel_size, eps=1e-5):
-        super(LayerNormalization, self).__init__()
-
-        self.eps = eps
-        self.hidden_size = channel_size
-        self.a2 = nn.Parameter(torch.ones(channel_size), requires_grad=True)
-        self.b2 = nn.Parameter(torch.zeros(channel_size), requires_grad=True)
-
-    def forward(self, z):
-        sizer = z.size()
-        z = z.view(sizer[0], -1)
-
-        mu = z.mean(1)
-        sigma = z.std(1)
-        ln_out = (z - mu.expand_as(z)) / (sigma.expand_as(z) + self.eps)
-        ln_out = ln_out.view(sizer) * self.a2.unsqueeze(0).unsqueeze(2).unsqueeze(3).expand(sizer) + self.b2.unsqueeze(
-            0).unsqueeze(2).unsqueeze(3).expand(sizer)
-        return ln_out
-
-
 ############################
 # G network
 ###########################
 # custom weights initialization called on netG
-def G_weights_init(m):
-    classname = m.__class__.__name__
-    if classname.find('Conv') != -1:
-        m.weight.data = init.kaiming_normal(m.weight.data)
-    elif classname.find('BatchNorm') != -1:
-        m.weight.data.normal_(1.0, 0.02)
-        m.bias.data.fill_(0)
-
 
 class BasicBlock(nn.Module):
     expansion = 1
@@ -151,19 +124,13 @@ class BasicBlock(nn.Module):
     def __init__(self):
         super(BasicBlock, self).__init__()
         self.conv1 = nn.Conv2d(ngf, ngf, 3, 1, 1, bias=False)
-        # self.bn1 = nn.InstanceNorm2d(ngf, affine=True)
-        # self.bn1 = LayerNormalization(ngf)
-        self.bn1 = nn.BatchNorm2d(ngf)
         self.conv2 = nn.Conv2d(ngf, ngf, 3, 1, 1, bias=False)
-        # self.bn2 = nn.InstanceNorm2d(ngf, affine=True)
-        # self.bn2 = LayerNormalization(ngf)
-        self.bn2 = nn.BatchNorm2d(ngf)
 
     def forward(self, x):
         residual = x
 
-        out = self.conv1(F.relu(self.bn1(x), True))
-        out = self.conv2(F.relu(self.bn2(out), True)) * 0.3 + residual
+        out = self.conv1(F.relu(x, True))
+        out = self.conv2(F.relu(out, True)) * 0.3 + residual
 
         return out
 
@@ -174,9 +141,6 @@ class _netG(nn.Module):
         #      self.convN = nn.ConvTranspose2d(100, 4, opt.imageSize // 4, 1, 0, bias=False)
 
         self.conv1 = nn.Conv2d(3, ngf // 2, 7, 2, 3, bias=False)
-        # self.bn1 = nn.InstanceNorm2d(ngf // 2, affine=True)
-        # self.bn1 = LayerNormalization(ngf // 2)
-        self.bn1 = nn.BatchNorm2d(ngf // 2)
 
         # state size. (ngf) x W x H
         self.conv2 = nn.Conv2d(ngf // 2, ngf, 4, 2, 1, bias=False)
@@ -200,7 +164,7 @@ class _netG(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)), True)
+        out = F.relu(self.conv1(x), True)
         out = self.conv2(out)
 
         out = self.resnet(out)
@@ -215,82 +179,10 @@ class _netG(nn.Module):
 
 
 netG = _netG()
-netG.apply(G_weights_init)
 if opt.netG != '':
     netG.load_state_dict(torch.load(opt.netG))
 print(netG)
 
-
-# class LayerNormalization(nn.Module):  # PR this!!
-#     def __init__(self, hidden_size, eps=1e-5):
-#         super(LayerNormalization, self).__init__()
-#
-#         self.eps = eps
-#         self.hidden_size = hidden_size
-#         self.a2 = nn.Parameter(torch.ones(1, hidden_size), requires_grad=True)
-#         self.b2 = nn.Parameter(torch.zeros(1, hidden_size), requires_grad=True)
-#
-#     def forward(self, z):
-#         sizer = z.size()
-#         z = z.view(sizer[0], -1)
-#
-#         mu = z.mean(1)
-#         sigma = z.std(1)
-#         ln_out = (z - mu.expand_as(z)) / (sigma.expand_as(z) + self.eps)
-#         ln_out = ln_out * self.a2.expand_as(ln_out) + self.b2.expand_as(ln_out)
-#         return ln_out.view(sizer)
-
-
-############################
-# D network
-###########################
-def D_weights_init(m):
-    classname = m.__class__.__name__
-    if classname.find('Conv') != -1:
-        m.weight.data = init.kaiming_normal(m.weight.data, a=0.2)
-    elif classname.find('BatchNorm') != -1:
-        m.weight.data.normal_(1.0, 0.02)
-        m.bias.data.fill_(0)
-    elif classname.find('Linear') != -1:
-        m.weight.data = init.kaiming_normal(m.weight.data, a=0.2)
-
-
-# class _netD(nn.Module):
-#     def __init__(self):
-#         super(_netD, self).__init__()
-#
-#         # self.bn0 = LayerNormalization(3 * 96 * 96)
-#         # self.bn0 = nn.BatchNorm2d(3)
-#
-#         # input is 3 x 256 x 256
-#         self.conv1 = nn.Conv2d(3, ndf, 4, 2, 1, bias=False)
-#         # state size. (ndf) x 128 x 128
-#
-#         self.conv2 = nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False)
-#         self.bn2 = LayerNormalization(ndf * 2)
-#         # state size. (ndf * 2) x 64 x 64
-#
-#         self.conv3 = nn.Conv2d(ndf * 2, ndf * 4, 4, 2, 1, bias=False)
-#         self.bn3 = LayerNormalization(ndf * 4)
-#         # state size. (ndf * 4) x 32 x 32
-#
-#         self.conv4 = nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False)
-#         self.bn4 = LayerNormalization(ndf * 8)
-#         # state size. (ndf * 8) x 16 x 16
-#
-#         self.conv5 = nn.Conv2d(ndf * 8, 1, 4, 1, 1, bias=False)
-#
-#     def forward(self, x):
-#         # x = torch.cat((self.bn0(input), per), 1)
-#         out = F.leaky_relu(self.conv1(x), 0.2, True)
-#         out = F.leaky_relu(self.bn2(self.conv2(out)), 0.2, True)
-#         out = F.leaky_relu(self.bn3(self.conv3(out)), 0.2, True)
-#         out = F.leaky_relu(self.bn4(self.conv4(out)), 0.2, True)
-#         out = self.conv5(out).view(out.size()[0], -1).mean(1)
-#         # out = self.dense1(out.view(out.size(0), -1))
-#         # out = self.dense2(out)
-#
-#         # return out
 class _netD(nn.Module):
     def __init__(self):
         super(_netD, self).__init__()
@@ -303,37 +195,30 @@ class _netD(nn.Module):
         # state size. (ndf) x 96 x 96
 
         self.conv12 = nn.Conv2d(ndf, ndf, 4, 2, 1, bias=False)
-        self.bn12 = LayerNormalization(ndf)
         # self.bn12 = nn.BatchNorm2d(ndf)
         # state size. (ndf) x 48 x 48
 
         self.conv21 = nn.Conv2d(ndf, ndf * 2, 3, 1, 1, bias=False)
-        self.bn21 = LayerNormalization(ndf * 2)
         # self.bn21 = nn.BatchNorm2d(ndf * 2)
         # state size. (ndf * 2) x 48 x 48
 
         self.conv22 = nn.Conv2d(ndf * 2, ndf * 2, 4, 2, 1, bias=False)
-        self.bn22 = LayerNormalization(ndf * 2)
         # self.bn22 = nn.BatchNorm2d(ndf * 2)
         # state size. (ndf * 2) x 24 x 24
 
         self.conv31 = nn.Conv2d(ndf * 2, ndf * 4, 3, 1, 1, bias=False)
-        self.bn31 = LayerNormalization(ndf * 4)
         # self.bn31 = nn.BatchNorm2d(ndf * 4)
         # state size. (ndf * 4) x 24 x 24
 
         self.conv32 = nn.Conv2d(ndf * 4, ndf * 4, 4, 2, 1, bias=False)
-        self.bn32 = LayerNormalization(ndf * 4)
         # self.bn32 = nn.BatchNorm2d(ndf * 4)
         # state size. (ndf * 4) x 12 x 12
 
         self.conv41 = nn.Conv2d(ndf * 4, ndf * 8, 3, 1, 1, bias=False)
-        self.bn41 = LayerNormalization(ndf * 8)
         # self.bn41 = nn.BatchNorm2d(ndf * 8)
         # state size. (ndf * 8) x 12 x 12
 
         self.conv42 = nn.Conv2d(ndf * 8, ndf * 8, 4, 2, 1, bias=False)
-        self.bn42 = LayerNormalization(ndf * 8)
         # self.bn42 = nn.BatchNorm2d(ndf * 8)
         # state size. (ndf * 8) x 6 x 6
 
@@ -343,13 +228,13 @@ class _netD(nn.Module):
     def forward(self, x):
         # x = torch.cat((self.bn0(input), per), 1)
         out = F.leaky_relu(self.conv11(x), 0.2, True)
-        out = F.leaky_relu(self.bn12(self.conv12(out)), 0.2, True)
-        out = F.leaky_relu(self.bn21(self.conv21(out)), 0.2, True)
-        out = F.leaky_relu(self.bn22(self.conv22(out)), 0.2, True)
-        out = F.leaky_relu(self.bn31(self.conv31(out)), 0.2, True)
-        out = F.leaky_relu(self.bn32(self.conv32(out)), 0.2, True)
-        out = F.leaky_relu(self.bn41(self.conv41(out)), 0.2, True)
-        out = F.leaky_relu(self.bn42(self.conv42(out)), 0.2, True)
+        out = F.leaky_relu(self.conv12(out), 0.2, True)
+        out = F.leaky_relu(self.conv21(out), 0.2, True)
+        out = F.leaky_relu(self.conv22(out), 0.2, True)
+        out = F.leaky_relu(self.conv31(out), 0.2, True)
+        out = F.leaky_relu(self.conv32(out), 0.2, True)
+        out = F.leaky_relu(self.conv41(out), 0.2, True)
+        out = F.leaky_relu(self.conv42(out), 0.2, True)
 
         out = self.dense1(out.view(out.size(0), -1))
         # out = self.dense2(out)
@@ -358,36 +243,12 @@ class _netD(nn.Module):
 
 
 netD = _netD()
-netD.apply(D_weights_init)
 if opt.netD != '':
     netD.load_state_dict(torch.load(opt.netD))
 print(netD)
 
 criterion_MSE = nn.MSELoss()
 L2_dist = nn.PairwiseDistance(2)
-############################
-# VGG loss
-###########################
-# vgg19 = M.vgg19()
-# vgg19.load_state_dict(torch.load('vgg19.pth'))
-
-
-# class vgg54(nn.Module):
-#    def __init__(self):
-#       super(vgg54, self).__init__()
-#      self.features = nn.Sequential(
-#         # stop at conv4
-#        *list(vgg19.features.children())[:-7]
-#   )
-
-# def forward(self, x):
-#    x = self.features(x)
-#   return x
-
-
-# vgg_features = vgg54()
-# for p in vgg_features.parameters():
-#    p.requires_grad = False  # to avoid computation
 
 input = torch.FloatTensor(opt.batchSize, 3, opt.imageSize, opt.imageSize)
 zasshu = torch.FloatTensor(opt.batchSize, 3, opt.imageSize, opt.imageSize)
@@ -410,10 +271,11 @@ if opt.cuda:
 # setup optimizer
 optimizerD = optim.Adam(netD.parameters(), lr=opt.lrD, betas=(opt.beta1, 0.9))
 optimizerG = optim.Adam(netG.parameters(), lr=opt.lrG, betas=(opt.beta1, 0.9))
+if opt.optim:
+    optimizerG.load_state_dict(torch.load('%s/optimG_checkpoint.pth' % opt.outf))
+    optimizerD.load_state_dict(torch.load('%s/optimD_checkpoint.pth' % opt.outf))
 
 flag = 1
-flag2 = 1
-flag3 = 1
 flag4 = opt.flag
 scaler = opt.scale
 
@@ -500,19 +362,15 @@ for epoch in range(opt.niter):
                 dataB = dataB.cuda()
 
             if flag:  # fix samples
-                viz.images(
-                    dataA.mul(0.5).add(0.5).cpu().numpy(),
-                    opts=dict(title='manifold_A', caption='target')
-                )
+
+                writer.add_image('target imgs', vutils.make_grid(dataA.mul(0.5).add(0.5), nrow=16))
+                writer.add_image('source imgs', vutils.make_grid(fixed_zasshu.mul(0.5).add(0.5), nrow=16))
 
                 fixed_zasshu.resize_as_(dataB).copy_(dataB)
                 vutils.save_image(fixed_zasshu.mul(0.5).add(0.5),
                                   '%s/ori_samples.png' % opt.outf)
-                viz.images(
-                    fixed_zasshu.mul(0.5).add(0.5).cpu().numpy(),
-                    opts=dict(title='manifold_B', caption='source')
-                )
                 flag -= 1
+
 
             input.resize_as_(dataA).copy_(dataA)
             zasshu.resize_as_(dataB).copy_(dataB)
@@ -537,56 +395,30 @@ for epoch in range(opt.niter):
         ############################
 
         if gen_iterations < opt.baseGeni:
-            if flag2:
-                window2 = viz.line(
-                    np.array([MSEloss.data[0]]), np.array([gen_iterations]),
-                    opts=dict(title='MSE/VGG L2 loss')
-                )
-                flag2 -= 1
-            viz.line(np.array([MSEloss.data[0]]), np.array([gen_iterations]), update='append', win=window2)
-
+            writer.add_scalar('MSE/VGG L2 loss', MSEloss.data[0], gen_iterations)
             print('[%d/%d][%d/%d][%d] mse %f '
                   % (epoch, opt.niter, i, len(dataloaderA), gen_iterations, MSEloss.data[0]))
 
         else:
-
-            if flag3:
-                window1 = viz.line(
-                    np.array([errD.data[0]]), np.array([gen_iterations]),
-                    opts=dict(title='errD(distance)')
-                )
-                window3 = viz.line(
-                    np.array([lip_loss.data[0]]), np.array([gen_iterations]),
-                    opts=dict(title='Gradient penalty ' + str(opt.gpW))
-                )
-                window4 = viz.line(
-                    np.array([-errG.data[0]]), np.array([gen_iterations]),
-                    opts=dict(title='Gnet loss', caption='Gnet loss')
-                )
-                flag3 -= 1
-            else:
-                viz.line(np.array([errD.data[0]]), np.array([gen_iterations]), update='append', win=window1)
-                viz.line(np.array([lip_loss.data[0]]), np.array([gen_iterations]), update='append', win=window3)
-                viz.line(np.array([-errG.data[0]]), np.array([gen_iterations]), update='append', win=window4)
+            writer.add_scalar('MSE/VGG L2 loss', MSEloss.data[0], gen_iterations)
+            writer.add_scalar('errD(wasserstein distance)', errD.data[0], gen_iterations)
+            writer.add_scalar('errD_real', errD_real.data[0], gen_iterations)
+            writer.add_scalar('errD_fake', errD_fake.data[0], gen_iterations)
+            writer.add_scalar('Gnet loss toward real', -errG.data[0], gen_iterations)
+            writer.add_scalar('gradient_penalty'+ str(opt.gpW), lip_loss.data[0], gen_iterations)
 
             print('[%d/%d][%d/%d][%d] distance: %f err_G: %f err_D_real: %f err_D_fake %f GPLoss %f'
                   % (epoch, opt.niter, i, len(dataloaderA), gen_iterations,
                      errD.data[0], -errG.data[0], errD_real.data[0], errD_fake.data[0],
                      lip_loss.data[0]))
 
-        if gen_iterations % 100 == 0:
+        if gen_iterations % 500 == 0:
             fake = netG(Variable(fixed_zasshu, volatile=True)).data
             real = fake / scaler + fixed_zasshu
-            viz.images(
-                fake.mul(0.5).add(0.5).cpu().numpy(),
-                win=imageW2,
-                opts=dict(title='fakeHRRes', caption='fakeHRRes')
-            )
-            viz.images(
-                real.mul(0.5).add(0.5).clamp(0, 1).cpu().numpy(),
-                win=imageW,
-                opts=dict(title='fakeHR', caption='fakeHR')
-            )
+            writer.add_image('fakeHRRes', vutils.make_grid(fake.mul(0.5).add(0.5), nrow=16),
+                             gen_iterations)
+            writer.add_image('fakeHR', vutils.make_grid(real.mul(0.5).add(0.5).clamp(0, 1), nrow=16),
+                             gen_iterations)
 
             vutils.save_image(real.mul(0.5).add(0.5),
                               '%s/fake_samples_gen_iter_%08d.png' % (opt.outf, gen_iterations))
@@ -594,8 +426,11 @@ for epoch in range(opt.niter):
         gen_iterations += 1
 
     # do checkpointing
-    if epoch % cuts == 0:
-        torch.save(netG.state_dict(), '%s/netG_epoch_%d.pth' % (opt.outf, epoch + opt.epoi))
-        torch.save(netD.state_dict(), '%s/netD_epoch_%d.pth' % (opt.outf, epoch + opt.epoi))
-
-        # TODO: retain_graph
+    if opt.cut == 0:
+        torch.save(netG.state_dict(), '%s/netG_epoch_only.pth' % opt.outf)
+        torch.save(netD.state_dict(), '%s/netD_epoch_only.pth' % opt.outf)
+    elif epoch % opt.cut == 0:
+        torch.save(netG.state_dict(), '%s/netG_epoch_%d.pth' % (opt.outf, epoch))
+        torch.save(netD.state_dict(), '%s/netD_epoch_%d.pth' % (opt.outf, epoch))
+    torch.save(optimizerG.state_dict(), '%s/optimG_checkpoint.pth' % opt.outf)
+    torch.save(optimizerD.state_dict(), '%s/optimD_checkpoint.pth' % opt.outf)
